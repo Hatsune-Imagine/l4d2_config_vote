@@ -14,8 +14,6 @@
 
 #define CUSTOMFLAGS_DEFAULT ""
 
-#define INVALID_FLAGS       0
-
 #define MODEFLAGS_COOP      1
 #define MODEFLAGS_REALISM   2
 #define MODEFLAGS_VERSUS    4
@@ -39,18 +37,16 @@ enum SelectType
 
 enum ConfigType
 {
-	ConfigType_NotFound = 0,
-	ConfigType_ServerCommand,
-	ConfigType_ClientCommand,
-	ConfigType_ExternalVote,
-	ConfigType_CheatCommand,
+	Type_NotFound = 0,
+	Type_ServerCommand,
+	Type_ClientCommand,
+	Type_ExternalVote,
+	Type_CheatCommand,
 }
 
 enum struct ConfigData
 {
 	ConfigType type;
-	int menuCustomFlags;
-	int menuModeFlags;
 	int menuTeamFlags;
 	int voteTeamFlags;
 	bool bAdminOneVotePassed;
@@ -61,7 +57,7 @@ enum struct ConfigData
 
 SourceKeyValues
 	g_kvSelect[MAXPLAYERS + 1],
-	g_kvSelectLastVotedSub,
+	g_kvSelectLastVoted,
 	g_kvRoot;
 
 ConVar g_cvVoteFilePath, g_cvMenuCustomFlags, g_cvAdminTeamFlags, g_cvPrintMsg, g_cvPassMode, g_cvIconSelected, g_cvIconUnselected;
@@ -92,6 +88,8 @@ public void OnPluginStart()
 	g_cvIconSelected = CreateConVar("l4d2_config_vote_icon_selected", "[√]", "Selected Icon.");
 	g_cvIconUnselected = CreateConVar("l4d2_config_vote_icon_unselected", "[  ]", "Unselected Icon.");
 	g_cvVoteFilePath.AddChangeHook(OnCvarChanged);
+
+	LoadTranslations("l4d2_config_vote.phrases.txt");
 	// AutoExecConfig(true, "l4d2_config_vote");
 }
 
@@ -224,15 +222,15 @@ int MenuHandlerCB(Menu menu, MenuAction action, int client, int itemNum)
 			menu.GetItem(itemNum, sKv, sizeof(sKv));
 
 			SourceKeyValues kv = view_as<SourceKeyValues>(StringToInt(sKv));
-			ConfigType configType = GetConfigType(kv);
+			ConfigType type = GetConfigType(kv);
 
-			switch (configType)
+			switch (type)
 			{
-				case ConfigType_NotFound:
+				case Type_NotFound:
 				{
 					ShowMenu(client, kv);
 				}
-				case ConfigType_ExternalVote:
+				case Type_ExternalVote:
 				{
 					char cmd[COMMAND_MAX_LENGTH];
 					kv.GetString("Command", cmd, sizeof(cmd));
@@ -240,7 +238,7 @@ int MenuHandlerCB(Menu menu, MenuAction action, int client, int itemNum)
 				}
 				default:
 				{
-					StartVote(client, kv, configType);
+					StartVote(client, kv, type);
 				}
 			}
 		}
@@ -264,11 +262,11 @@ void StartVote(int client, SourceKeyValues kv, ConfigType type)
 {
 	if (!L4D2NativeVote_IsAllowNewVote())
 	{
-		CPrintToChat(client, "{lightgreen}投票正在进行中, 暂不能发起新的投票.");
+		CPrintToChat(client, "%t", "_NotAllowNewVote");
 		return;
 	}
 
-	g_kvSelectLastVotedSub = kv;
+	g_kvSelectLastVoted = kv;
 
 	g_cfgData[client].type = type;
 	g_cfgData[client].voteTeamFlags = kv.GetInt("VoteTeamFlags", TEAMFLAGS_DEFAULT);
@@ -296,7 +294,7 @@ void StartVote(int client, SourceKeyValues kv, ConfigType type)
 	}
 
 	if (!vote.DisplayVote(iClients, iPlayerCount, 20))
-		LogMessage("发起投票失败");
+		LogMessage("Failed to initiate voting.");
 }
 
 void Vote_Handler(L4D2NativeVote vote, VoteAction action, int param1, int param2)
@@ -306,12 +304,12 @@ void Vote_Handler(L4D2NativeVote vote, VoteAction action, int param1, int param2
 		case VoteAction_Start:
 		{
 			if (g_cvPrintMsg.BoolValue)
-				CPrintToChatAll("{blue}[Vote] {olive}%N {default}发起了一个投票.", param1);
+				CPrintToChatAll("%t", "_InitiatedVoting", param1);
 		}
 		case VoteAction_PlayerVoted:
 		{
 			if (g_cvPrintMsg.BoolValue)
-				CPrintToChatAll("{olive}%N {default}已投票", param1);
+				CPrintToChatAll("%t", "_PlayerVoted");
 
 			if (!CheckCommandAccess(param1, "sm_admin", ADMFLAG_ROOT))
 				return;
@@ -332,20 +330,20 @@ void Vote_Handler(L4D2NativeVote vote, VoteAction action, int param1, int param2
 			bool voteResult = (g_cvPassMode.BoolValue) ? (vote.YesCount > vote.PlayerCount / 2) : (vote.YesCount > vote.NoCount);
 			if (voteResult)
 			{
-				vote.SetPass("加载中...");
+				vote.SetPass("Loading...");
 
 				switch (g_cfgData[vote.Initiator].type)
 				{
-					case ConfigType_ServerCommand:
+					case Type_ServerCommand:
 					{
 						ServerCommand("%s", g_cfgData[vote.Initiator].cmd);
 					}
-					case ConfigType_ClientCommand:
+					case Type_ClientCommand:
 					{
 						if (IsClientInGame(vote.Initiator))
 							ClientCommand(vote.Initiator, "%s", g_cfgData[vote.Initiator].cmd);
 					}
-					case ConfigType_CheatCommand:
+					case Type_CheatCommand:
 					{
 						if (!IsClientInGame(vote.Initiator))
 							return;
@@ -365,8 +363,8 @@ void Vote_Handler(L4D2NativeVote vote, VoteAction action, int param1, int param2
 					}
 				}
 
-				SourceKeyValues kv = g_kvSelectLastVotedSub;
-				SourceKeyValues parentKv = GetPreviousNode(g_kvRoot, g_kvSelectLastVotedSub);
+				SourceKeyValues kv = g_kvSelectLastVoted;
+				SourceKeyValues parentKv = GetPreviousNode(g_kvRoot, g_kvSelectLastVoted);
 				SelectType selectType = GetSelectType(parentKv);
 				switch (selectType)
 				{
@@ -500,18 +498,18 @@ ConfigType GetConfigType(SourceKeyValues kv)
 	kv.GetString("Type", type, sizeof(type));
 
 	if (!strcmp(type, "ServerCommand", false))
-		return ConfigType_ServerCommand;
+		return Type_ServerCommand;
 
 	if (!strcmp(type, "ClientCommand", false))
-		return ConfigType_ClientCommand;
+		return Type_ClientCommand;
 
 	if (!strcmp(type, "ExternalVote", false))
-		return ConfigType_ExternalVote;
+		return Type_ExternalVote;
 
 	if (!strcmp(type, "CheatCommand", false))
-		return ConfigType_CheatCommand;
+		return Type_CheatCommand;
 
-	return ConfigType_NotFound;
+	return Type_NotFound;
 }
 
 void RegAdminCmdEx(const char[] cmd, ConCmd callback, int adminflags, const char[] description="", const char[] group="", int flags=0)
